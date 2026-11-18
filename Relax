@@ -7568,16 +7568,24 @@ function UI.Build()
         if UI.RefreshSea then UI.RefreshSea(true) end
     end)
     local s2 = UI.Group(sea, "Auto Sea", true)
-    UI.Toggle(s2, "Auto Sea 2", "In Sea 1: travel to Sea 2 (level 700+)", function() return State.AutoSea2 end, function(v)
+    UI.AutoSea2Row = UI.Toggle(s2, "Auto Sea 2", "In Sea 1: travel to Sea 2 (level 700+)", function() return State.AutoSea2 end, function(v)
         State.AutoSea2 = v
         AutoSea.Last = 0
-        if v and State.Sea ~= 1 then Utils.Notify("Auto Sea 2 only works while you are in Sea 1", 4, "warn") end
     end)
-    UI.Toggle(s2, "Auto Sea 3", "In Sea 2: travel to Sea 3 (level 1500+)", function() return State.AutoSea3 end, function(v)
+    UI.AutoSea3Row = UI.Toggle(s2, "Auto Sea 3", "In Sea 2: travel to Sea 3 (level 1500+)", function() return State.AutoSea3 end, function(v)
         State.AutoSea3 = v
         AutoSea.Last = 0
-        if v and State.Sea ~= 2 then Utils.Notify("Auto Sea 3 only works while you are in Sea 2", 4, "warn") end
     end)
+    UI.AutoSeaDone = UI.Info(s2, "You have already passed through all seas.", 20)
+    UI.AutoSeaDone.TextColor3 = T.Success
+    UI.AutoSeaDone.TextSize = 12
+    UI.AutoSeaDone.Visible = false
+    function UI.UpdateSeaToggles()
+        if UI.AutoSea2Row then UI.AutoSea2Row.Visible = (State.Sea == 1) end
+        if UI.AutoSea3Row then UI.AutoSea3Row.Visible = (State.Sea == 2) end
+        if UI.AutoSeaDone then UI.AutoSeaDone.Visible = (State.Sea == 3) end
+    end
+    UI.UpdateSeaToggles()
     UI.SeaTabStatus = UI.Info(s2, "", 30)
     UI.Info(s2, "Retries every " .. AutoSea.Interval .. " s once your level is high enough. The server decides if the travel is allowed (Ice Admiral / Don Swan quests). Farm is paused for the trip and your settings are saved first.", 66)
 
@@ -7851,6 +7859,7 @@ function UI.Update()
                 .. "\nDetected via: " .. tostring(State.SeaSource)
         end
         if UI.SeaTabStatus then UI.SeaTabStatus.Text = "Status: " .. tostring(State.SeaStatus) end
+        if UI.UpdateSeaToggles then UI.UpdateSeaToggles() end
     elseif tab == "Raid" then
         if UI.RaidSeaInfo then
             if State.Sea == 1 then
