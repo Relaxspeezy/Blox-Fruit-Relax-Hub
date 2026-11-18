@@ -501,6 +501,7 @@ local State = {
     AutoClose = true,
     AutoEquip = true,
     AutoHaki = false,
+    AutoInstinct = false,
     AutoRace = false,
     AutoStats = false,
     AutoBoss = false,
@@ -513,6 +514,7 @@ local State = {
     AutoRaid = false,
     AutoFactory = false,
     AutoCakePrince = false,
+    AutoPirateRaid = false,
     RaidChip = "Flame",
     RaidLimit = 0,
     InstantTP = false,
@@ -569,7 +571,7 @@ local State = {
 }
 
 local UI, ServerHop, ConfigManager = {}, {}, {FileName = "RelaxHub_BloxFruits_Config.json"}
-local Farm, Quest, Combat, Flight, Diag, AutoStat, FPS, Shop, AutoSea, Raid, Factory, CakeP = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+local Farm, Quest, Combat, Flight, Diag, AutoStat, FPS, Shop, AutoSea, Raid, Factory, CakeP, PRaid = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 
 local function Paused() return os.clock() < State.PausedUntil end
 local function Pause(sec) State.PausedUntil = math.max(State.PausedUntil, os.clock() + sec) end
@@ -702,7 +704,7 @@ end
 
 -- true while an event feature (Auto Factory / Auto Cake Prince) controls the character: farm / boss / chest / fruit pause
 function Utils.EventBusy()
-    return (Factory.Active or CakeP.Active) and true or false
+    return (Factory.Active or CakeP.Active or PRaid.Active) and true or false
 end
 
 function Utils.Invoke(...)
@@ -926,7 +928,7 @@ function Flight.To(target, tol, cancel)
 
     local function stop()
         if not State.Running then return true end
-        if (Factory.Active and not Factory.Mine) or (CakeP.Active and not CakeP.Mine) then return true end
+        if (Factory.Active and not Factory.Mine) or (CakeP.Active and not CakeP.Mine) or (PRaid.Active and not PRaid.Mine) then return true end
         return cancel ~= nil and cancel() == true
     end
     local function finish(ok)
@@ -1410,6 +1412,42 @@ function Combat.AutoHakiLoop()
                 end
             end
             task.wait(3)
+        end
+    end)
+end
+
+-- Auto Instinct (Observation Haki, key E in game). Only ACTIVATES it: you must already own Instinct (Instinct Teacher, Upper Skylands).
+-- The game call is the same one the E key makes: CommE:FireServer("Ken", true)  (explicit ON, it does not toggle it off).
+Combat.InstinctStatus = "Off"
+function Combat.AutoInstinctLoop()
+    task.spawn(function()
+        local lastFire, lastKey = 0, 0
+        while State.Running do
+            task.wait(1)
+            pcall(function()
+                if not State.AutoInstinct then Combat.InstinctStatus = "Off"; return end
+                if Paused() then return end
+                local hum = Utils.GetHumanoid()
+                if not hum or hum.Health <= 0 then return end
+                if os.clock() - lastFire < 6 then return end
+                lastFire = os.clock()
+                local r = ReplicatedStorage:FindFirstChild("Remotes")
+                local comm = r and r:FindFirstChild("CommE")
+                if comm then
+                    comm:FireServer("Ken", true)
+                    Combat.InstinctStatus = "On (re-applied every 6 s)"
+                elseif VirtualInputManager and os.clock() - lastKey > 30 then
+                    lastKey = os.clock()
+                    local ok = pcall(function()
+                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+                        task.wait(0.08)
+                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+                    end)
+                    Combat.InstinctStatus = ok and "On (key E)" or "could not press E"
+                else
+                    Combat.InstinctStatus = "no way to activate it found"
+                end
+            end)
         end
     end)
 end
@@ -3722,7 +3760,7 @@ end
 -- ============================================================
 local SAVE_KEYS = {
     "AutoFarm","AutoQuest","QuestWatch","BringMobs","FastAttack","AutoClose","AutoEquip","AutoHaki","AutoRace","AutoStats","AutoBoss","AutoChest","AutoFruit",
-    "AutoSea2","AutoSea3","AutoFactory","AutoCakePrince","RaidChip","RaidLimit",
+    "AutoSea2","AutoSea3","AutoFactory","AutoCakePrince","AutoPirateRaid","AutoInstinct","RaidChip","RaidLimit",
     "InstantTP","HitAll","SignalMonitor","FPSBoost","AutoSave","AutoRejoin","Toasts","HumanizeLevel","FlySpeed","HoverHeight","GatherRadius",
     "AttackSpeed","AttackRange","SafeHP","LevelGoal",
     "WinScale","AttackMode","WeaponType","StatType","FarmTargetMob","SelectedBoss",
@@ -3804,7 +3842,7 @@ function ConfigManager.Load()
 end
 
 function ConfigManager.Reset()
-    for _, k in ipairs({"AutoFarm","AutoHaki","AutoRace","AutoStats","AutoBoss","AutoChest","AutoFruit","AutoSea2","AutoSea3","AutoRaid","AutoFactory","AutoCakePrince","ESPEnabled","InstantTP","FPSBoost"}) do State[k] = false end
+    for _, k in ipairs({"AutoFarm","AutoHaki","AutoRace","AutoStats","AutoBoss","AutoChest","AutoFruit","AutoSea2","AutoSea3","AutoRaid","AutoFactory","AutoCakePrince","AutoPirateRaid","AutoInstinct","ESPEnabled","InstantTP","FPSBoost"}) do State[k] = false end
     State.AutoQuest, State.BringMobs, State.FastAttack, State.AutoEquip, State.SignalMonitor = true, true, true, true, true
     State.AutoClose, State.AutoSave, State.AutoRejoin, State.Toasts = true, true, true, true
     State.QuestWatch = true
@@ -6093,7 +6131,7 @@ end
 
 -- one full run. Returns true when a Cake Prince was killed.
 function CakeP.Cycle()
-    local function stop() return (not State.Running) or (not State.AutoCakePrince) or Raid.Active or Factory.Active end
+    local function stop() return (not State.Running) or (not State.AutoCakePrince) or Raid.Active or Factory.Active or PRaid.Pending() end
     State.TargetMob = "-"
     CakeP.Fails = 0
     task.wait(0.3)                          -- let the other loops let go of the character
@@ -6183,6 +6221,10 @@ function CakeP.Loop()
                     CakeP.Status = "Off"
                     return
                 end
+                if PRaid.Pending() or PRaid.Active then
+                    CakeP.Status = "Waiting (Pirate Raid is running)"
+                    return
+                end
                 if Raid.Active or Factory.Active or AutoSea.Running or Paused() or State.Hopping then
                     CakeP.Status = "Waiting (another task is running)"
                     return
@@ -6219,6 +6261,293 @@ function CakeP.UpdateUI()
             k, CakeP.NEED, src, CakeP.Ready and "  ·  PORTAL READY" or "", CakeP.Describe(),
             CakeP.Done > 0 and ("\nCake Prince defeated: " .. CakeP.Done) or "")
     end
+end
+
+-- ============================================================
+-- PIRATE RAID  (Sea 3 event at Castle on the Sea)
+-- ============================================================
+-- Blox Fruits Fandom (Pirate Raid): Third Sea only, starts by itself every 1 h 15 min at Castle on the Sea.
+--   "Pirates have been spotted approaching the castle!" shows 20 s before the start, "The pirates are raiding Castle on the Sea!" when it starts.
+--   Non-boss enemies of the First / Second Sea spawn (Horned Warrior, Magma Ninja, Lava Pirate, Ship Deckhand / Engineer / Steward / Officer,
+--   Arctic Warrior, Snow Lurker, Sea Soldier) and one tanky final enemy.
+--   Rewards: one kill = 100 Fragments when the raid ends; the player who lands the LAST hit on the tanky enemy gets a random fruit.
+-- Auto Pirate Raid: sees the message (or the raid enemies), flies to the castle, kills the small pirates first and leaves the tanky one
+-- for last so that the final hit is yours, then gives control back to Auto Farm / Auto Cake Prince.
+PRaid.NAMES = {"Horned Warrior", "Magma Ninja", "Lava Pirate", "Ship Deckhand", "Ship Engineer", "Ship Steward", "Ship Officer",
+    "Arctic Warrior", "Snow Lurker", "Sea Soldier"}
+PRaid.SET = {}
+for _, n in ipairs(PRaid.NAMES) do PRaid.SET[n:lower()] = true end
+PRaid.CASTLE = Vector3.new(-5085, 316, -3156)     -- last-resort guess; the real place is read from the map (_WorldOrigin.Locations) first
+PRaid.Active = false      -- true while Auto Pirate Raid controls the character (farm / boss / chest / fruit pause)
+PRaid.Mine = false        -- true only around its own flights
+PRaid.Status = "Off"
+PRaid.Done = 0
+PRaid.CoolUntil = 0
+PRaid.TriggerUntil = 0    -- the raid message was seen: treat the raid as running until then
+PRaid.LastMsg = nil
+PRaid.Cache, PRaid.CacheAt = {}, 0
+
+function PRaid.Say(t)
+    PRaid.Status = t
+    State.Status = "Auto Pirate Raid: " .. t
+end
+
+local function raidFly(target, tol, cancel)
+    PRaid.Mine = true
+    local ok = Flight.To(target, tol, cancel)
+    PRaid.Mine = false
+    return ok
+end
+
+-- Castle on the Sea: the map's own location marker first, then the fixed fallback
+function PRaid.CastlePos()
+    local wo = Workspace:FindFirstChild("_WorldOrigin")
+    local locs = wo and wo:FindFirstChild("Locations")
+    if locs then
+        for _, c in ipairs(locs:GetChildren()) do
+            local n = c.Name:lower()
+            if n:find("castle on the sea", 1, true) or n:find("battle of the gods", 1, true) then
+                if c:IsA("BasePart") then return c.Position end
+                local r = c:IsA("Model") and Utils.ModelRoot(c)
+                if r then return r.Position end
+            end
+        end
+    end
+    return PRaid.CASTLE
+end
+
+-- alive raid enemies (these names only exist in Sea 3 during the raid), nearest first
+function PRaid.Mobs()
+    local list = {}
+    local my = Utils.GetPos()
+    for model, hum in pairs(Registry.Mobs) do
+        if model.Parent and hum.Parent and hum.Health > 0 and PRaid.SET[cleanName(model.Name):lower()] then
+            local root = Utils.ModelRoot(model)
+            if root then table.insert(list, {model = model, root = root, hum = hum, dist = Utils.Distance(my, root.Position)}) end
+        end
+    end
+    table.sort(list, function(a, b) return a.dist < b.dist end)
+    return list
+end
+
+function PRaid.MobsCached()
+    if os.clock() - PRaid.CacheAt > 1 then
+        PRaid.CacheAt = os.clock()
+        PRaid.Cache = PRaid.Mobs()
+    end
+    return PRaid.Cache
+end
+
+-- true when a raid is running / about to run and Auto Pirate Raid wants the character
+function PRaid.Pending()
+    if not State.AutoPirateRaid or State.Sea ~= 3 or not State.Running then return false end
+    if os.clock() < PRaid.CoolUntil then return false end
+    if os.clock() < PRaid.TriggerUntil then return true end
+    local mobs = PRaid.MobsCached()
+    if #mobs == 0 then return false end
+    -- without the message: only count enemies that stand near the castle
+    return Utils.Distance(mobs[1].root.Position, PRaid.CastlePos()) < 1500
+end
+
+-- the two raid messages
+function PRaid.Check(text)
+    local low = tostring(text or ""):lower()
+    if low:find("pirates have been spotted", 1, true) or low:find("raiding castle on the sea", 1, true) then
+        if os.clock() - (PRaid.LastMsgAt or -999) > 5 then
+            PRaid.LastMsgAt = os.clock()
+            PRaid.TriggerUntil = os.clock() + 300
+            PRaid.LastMsg = low:find("spotted", 1, true) and "Pirates approaching (starts in ~20 s)" or "Pirates are raiding the castle"
+            Log("Pirate Raid: " .. PRaid.LastMsg)
+        end
+    end
+end
+
+function PRaid.Watch()
+    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui") or LocalPlayer:WaitForChild("PlayerGui", 15)
+    if not pg then return end
+    local function hook(d)
+        if not d:IsA("TextLabel") then return end
+        PRaid.Check(d.Text)
+        table.insert(State.Connections, d:GetPropertyChangedSignal("Text"):Connect(function() PRaid.Check(d.Text) end))
+    end
+    table.insert(State.Connections, pg.DescendantAdded:Connect(function(d) pcall(hook, d) end))
+end
+
+function PRaid.Release()
+    PRaid.Active, PRaid.Mine = false, false
+    State.HoldCF, State.InCombat, State.Traveling = nil, false, false
+    State.GatherPoint, State.GatherName = nil, nil
+    State.TargetMob = "-"
+    Farm.Epoch = (Farm.Epoch or 0) + 1      -- Auto Farm picks its target again afterwards
+    pcall(Farm.CountKills)
+end
+
+-- Returns true when the raid is over (all enemies dead)
+function PRaid.Fight()
+    local t0, lastSeen, started = os.clock(), os.clock(), false
+    local safeUntil, fails = 0, 0
+    local function stop() return (not State.Running) or (not State.AutoPirateRaid) or Raid.Active or AutoSea.Running end
+    PRaid.Say("raid detected: heading to Castle on the Sea")
+    task.wait(0.3)                          -- let the other loops let go of the character
+
+    while not stop() do
+        local now = os.clock()
+        if Paused() or State.Hopping then return false end
+        if now - t0 > 900 then
+            Log("Pirate Raid: gave up after 15 min", "WARN")
+            PRaid.CoolUntil = now + 60
+            return false
+        end
+        local hum, root = Utils.GetHumanoid(), Utils.GetRootPart()
+        if not hum or not root or hum.Health <= 0 then return false end
+
+        local mobs = PRaid.Mobs()
+        if #mobs > 0 then lastSeen, started = now, true end
+        if started and #mobs == 0 and now - lastSeen > 12 then return true end          -- everybody is dead: raid over
+        if not started and now > PRaid.TriggerUntil and now - t0 > 90 then               -- false alarm / already over
+            Log("Pirate Raid: no raid enemies found at the castle", "WARN")
+            PRaid.CoolUntil = now + 30
+            return false
+        end
+
+        if State.SafeHP > 0 and hum.MaxHealth > 0 and hum.Health / hum.MaxHealth * 100 < State.SafeHP and now > safeUntil then
+            State.InCombat = false
+            PRaid.Say("Low HP: recovering")
+            local up = root.Position + Vector3.new(0, 150, 0)
+            raidFly(up, 4, stop)
+            State.HoldCF = CFrame.new(up)
+            local r0 = os.clock()
+            while not stop() and os.clock() - r0 < 15 do
+                local h = Utils.GetHumanoid()
+                if not h or h.Health <= 0 or h.Health / h.MaxHealth * 100 >= 70 then break end
+                task.wait(0.5)
+            end
+            State.HoldCF = nil
+            safeUntil = os.clock() + 20
+        elseif #mobs > 0 then
+            -- the tanky final enemy (clearly the most HP) is left for last so the last hit is ours
+            local tank
+            if #mobs > 1 then
+                local best, second = nil, 0
+                for _, m in ipairs(mobs) do
+                    local mh = m.hum.MaxHealth
+                    if not best or mh > best.hum.MaxHealth then
+                        if best then second = math.max(second, best.hum.MaxHealth) end
+                        best = m
+                    else
+                        second = math.max(second, mh)
+                    end
+                end
+                if best.hum.MaxHealth >= second * 2 then tank = best end
+            end
+            local c
+            for _, m in ipairs(mobs) do if m ~= tank then c = m; break end end
+            c = c or mobs[1]
+            Farm.Tracked[c.model] = c.hum
+            local G = c.root.Position
+            local H = G + Vector3.new(0, Farm.Hover(), 0)
+            if Utils.Distance(root.Position, H) > 30 then
+                State.InCombat, State.HoldCF = false, nil
+                PRaid.Say("flying to " .. cleanName(c.model.Name))
+                if raidFly(H, 3, stop) then
+                    fails = 0
+                elseif not stop() then
+                    fails = fails + 1
+                    if fails >= 4 then
+                        Log("Pirate Raid: could not reach the enemies", "WARN")
+                        PRaid.CoolUntil = os.clock() + 60
+                        return false
+                    end
+                    task.wait(0.5)
+                end
+            end
+            root = Utils.GetRootPart()
+            if root and Utils.Distance(root.Position, H) < 40 then
+                fails = 0
+                State.HoldCF = lookCF(H, G)
+                State.InCombat = true
+                State.TargetMob = cleanName(c.model.Name)
+                PRaid.Say(string.format("fighting %s (%d left%s)", cleanName(c.model.Name), #mobs, tank and c ~= tank and ", tank last" or ""))
+            end
+        else
+            -- no raid enemy is loaded around us yet: go over the castle so they stream in
+            State.InCombat = false
+            local P = PRaid.CastlePos() + Vector3.new(0, 70, 0)
+            if Utils.Distance(root.Position, P) > 120 then
+                State.HoldCF = nil
+                PRaid.Say("flying to Castle on the Sea")
+                if not raidFly(P, 8, stop) then
+                    fails = fails + 1
+                    if fails >= 4 then
+                        PRaid.CoolUntil = os.clock() + 60
+                        return false
+                    end
+                    task.wait(0.5)
+                end
+            else
+                State.HoldCF = CFrame.new(P)
+                PRaid.Say(started and "waiting for the next wave" or "waiting for the pirates to arrive")
+            end
+        end
+        task.wait(0.1)
+        Farm.CountKills()
+    end
+    return false
+end
+
+function PRaid.Describe()
+    if State.Sea ~= 3 then return "Sea 3 only" end
+    if not State.AutoPirateRaid then return "Off" end
+    return PRaid.Status
+end
+
+function PRaid.Loop()
+    pcall(PRaid.Watch)
+    task.spawn(function()
+        while State.Running do
+            task.wait(1.5)
+            pcall(function()
+                if not State.AutoPirateRaid then
+                    if PRaid.Active then PRaid.Release() end
+                    PRaid.Status = "Off"
+                    return
+                end
+                if State.Sea ~= 3 then PRaid.Status = "Pirate Raid exists only in Sea 3"; return end
+                if Raid.Active or Factory.Active or AutoSea.Running or Paused() or State.Hopping then
+                    PRaid.Status = "Waiting (another task is running)"
+                    return
+                end
+                if CakeP.Active then
+                    -- Cake Prince lets go by itself as soon as PRaid.Pending() is true
+                    if not PRaid.Pending() then PRaid.Status = "Waiting for the Pirate Raid (every 1 h 15 min)" end
+                    return
+                end
+                if not PRaid.Pending() then PRaid.Status = "Waiting for the Pirate Raid (every 1 h 15 min)"; return end
+
+                PRaid.Active = true
+                local ok, res = pcall(PRaid.Fight)
+                PRaid.Release()
+                if not ok then
+                    Log("Pirate Raid error: " .. tostring(res), "WARN")
+                    task.wait(2)
+                elseif res then
+                    PRaid.Done = PRaid.Done + 1
+                    PRaid.TriggerUntil = 0
+                    PRaid.CoolUntil = os.clock() + 60
+                    PRaid.Status = "Pirate Raid finished (#" .. PRaid.Done .. ")"
+                    Log("Pirate Raid finished (#" .. PRaid.Done .. ")")
+                    Utils.Notify("Pirate Raid finished", 5, "success")
+                end
+            end)
+        end
+    end)
+end
+
+function PRaid.UpdateUI()
+    if UI.PirateBox then UI.PirateBox.Visible = (State.Sea == 3) end
+    if State.Sea ~= 3 or not UI.PirateInfo then return end
+    UI.PirateInfo.Text = "Status: " .. PRaid.Describe() .. (PRaid.Done > 0 and ("\nRaids finished: " .. PRaid.Done) or "")
+        .. (PRaid.LastMsg and ("\nLast message: " .. PRaid.LastMsg) or "")
 end
 
 -- ============================================================
@@ -6820,9 +7149,9 @@ function UI.Build()
     UI.Foot = foot
     UI.SetMinimized(UI.Minimized)
 
-    -- Tabs: Home · Farm · Boss · Combat · Collect · Visuals · World · Sea · Raid · Shop · System
+    -- Tabs: Home · Farm · Events · Boss · Combat · Collect · Visuals · World · Sea · Raid · Shop · System
     local tabs = {
-        {"Home", "🏠", "Home"}, {"Farm", "⚔", "Farm"}, {"Boss", "💀", "Boss"}, {"Combat", "💥", "Combat"},
+        {"Home", "🏠", "Home"}, {"Farm", "⚔", "Farm"}, {"Events", "🎉", "Events"}, {"Boss", "💀", "Boss"}, {"Combat", "💥", "Combat"},
         {"Collect", "📦", "Collect"}, {"Visuals", "👁", "Visuals"}, {"World", "🧭", "World"},
         {"Sea", "⛵", "Sea"}, {"Raid", "🌀", "Raid"}, {"Shop", "🛒", "Shop"}, {"System", "⚙", "System"},
     }
@@ -6939,50 +7268,6 @@ function UI.Build()
     UI.Toggle(g1, "Quest Watchdog", "Retakes the quest if the counter is stuck", function() return State.QuestWatch end, function(v) State.QuestWatch = v end)
     UI.Toggle(g1, "Gather Mobs", "Pulls same mobs to one point", function() return State.BringMobs end, function(v) State.BringMobs = v end)
     UI.Toggle(g1, "Auto Equip Weapon", nil, function() return State.AutoEquip end, function(v) State.AutoEquip = v end)
-    UI.Toggle(g1, "Auto Buso Haki", nil, function() return State.AutoHaki end, function(v) State.AutoHaki = v end)
-    UI.Toggle(g1, "Auto Race V3/V4", "Always on: uses the V3 ability (T) and transforms into V4 (Y) whenever the bar is full. Only what you own",
-        function() return State.AutoRace end, function(v) State.AutoRace = v end)
-    UI.Toggle(g1, "Auto Factory", "Sea 2: Core event -> goes there, fights with your selected weapon + attack method, then farm continues",
-        function() return State.AutoFactory end, function(v)
-            State.AutoFactory = v
-            if not v and Factory.Active then Factory.Release() end
-            if UI.RefreshAll then pcall(UI.RefreshAll) end
-        end)
-    UI.FactoryStatus = UI.Info(g1, "Race: Off\nFactory: Off", 28)
-
-    -- Sea 3 only: Auto Cake Prince (the whole card is hidden in other seas)
-    local cg = UI.Group(ft, "Cake Prince  ·  Sea 3", true)
-    UI.CakeBox = cg.Parent
-    UI.CakeBox.Visible = (State.Sea == 3)
-    UI.Toggle(cg, "Auto Cake Prince", "500 Cake Land mobs -> drip_mama -> portal -> kills the Cake Prince, then repeats",
-        function() return State.AutoCakePrince end, function(v)
-            State.AutoCakePrince = v
-            if v then
-                State.AutoEquip = true
-                if State.Sea ~= 3 then Utils.Notify("Cake Prince exists only in Sea 3", 5, "warn") end
-            elseif CakeP.Active then
-                CakeP.Release()
-            end
-            if UI.RefreshAll then pcall(UI.RefreshAll) end
-        end)
-    local cbRow = newRow(cg, 14)
-    local cbTrack = mk("Frame", {Size = UDim2.new(1, 0, 0, 8), Position = UDim2.new(0, 0, 0.5, -4), BackgroundColor3 = T.Off,
-        BorderSizePixel = 0}, cbRow)
-    corner(cbTrack, 4)
-    UI.CakeBar = mk("Frame", {Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = T.Accent, BorderSizePixel = 0}, cbTrack)
-    corner(UI.CakeBar, 4)
-    UI.CakeInfo = UI.Info(cg, "Mobs killed in this server: - / 500", 54)
-    UI.Button(cg, "🔍 Check kill count now", Color3.fromRGB(40, 90, 110), function()
-        task.spawn(function()
-            if State.Sea ~= 3 then Utils.Notify("Cake Prince exists only in Sea 3", 4, "warn"); return end
-            CakeP.Poll(true)
-            local k, src = CakeP.Count()
-            Log("Cake Prince: " .. k .. "/" .. CakeP.NEED .. " (" .. src .. "), drip_mama reply: " .. tostring(CakeP.LastReply))
-            Utils.Notify("Cake Prince: " .. k .. "/" .. CakeP.NEED .. " (" .. src .. ")", 5, "info")
-            pcall(CakeP.UpdateUI)
-        end)
-    end)
-    UI.Info(cg, "The count is per server (every player adds to it) and is read again in each server you join. Needs no Sweet Chalice (a chalice in hand would spawn the Dough King). Pauses Auto Farm / Boss / Chest / Fruit while it runs. Uses your selected weapon + attack method.", 66)
     UI.Toggle(g1, "Auto Stat Points", nil, function() return State.AutoStats end, function(v) State.AutoStats = v end)
 
     local g2 = UI.Group(ft, "Loadout", true)
@@ -7041,6 +7326,77 @@ function UI.Build()
     end
     UI.RefreshMobList()
 
+    -- ======== EVENTS ========
+    -- Everything that waits for a game event lives here (each card only shows in the sea where the event exists)
+    local evt = UI.TabFrames["Events"]
+    UI.EventsNote = UI.Info(evt, "Auto event features take control of the character while the event runs (Auto Farm / Boss / Chest / Fruit pause) and give it back when it ends. They use your selected weapon + attack method (Farm > Loadout, Combat).", 54)
+    UI.EventsSea1 = UI.Info(evt, "There are no auto events in Sea 1. Events: Sea 2 = Factory, Sea 3 = Cake Prince and Pirate Raid.", 30)
+    UI.EventsSea1.Visible = (State.Sea == 1)
+
+    -- Sea 2 only: Auto Factory
+    local fg = UI.Group(evt, "Factory  ·  Sea 2", true)
+    UI.FactoryBox = fg.Parent
+    UI.FactoryBox.Visible = (State.Sea == 2)
+    UI.Toggle(fg, "Auto Factory", "Sea 2: Core event -> goes there, fights with your selected weapon + attack method, then farm continues",
+        function() return State.AutoFactory end, function(v)
+            State.AutoFactory = v
+            if not v and Factory.Active then Factory.Release() end
+            if UI.RefreshAll then pcall(UI.RefreshAll) end
+        end)
+    UI.FactoryStatus = UI.Info(fg, "Status: Off", 28)
+
+    -- Sea 3 only: Auto Cake Prince (the whole card is hidden in other seas)
+    local cg = UI.Group(evt, "Cake Prince  ·  Sea 3", true)
+    UI.CakeBox = cg.Parent
+    UI.CakeBox.Visible = (State.Sea == 3)
+    UI.Toggle(cg, "Auto Cake Prince", "500 Cake Land mobs -> drip_mama -> portal -> kills the Cake Prince, then repeats",
+        function() return State.AutoCakePrince end, function(v)
+            State.AutoCakePrince = v
+            if v then
+                State.AutoEquip = true
+                if State.Sea ~= 3 then Utils.Notify("Cake Prince exists only in Sea 3", 5, "warn") end
+            elseif CakeP.Active then
+                CakeP.Release()
+            end
+            if UI.RefreshAll then pcall(UI.RefreshAll) end
+        end)
+    local cbRow = newRow(cg, 14)
+    local cbTrack = mk("Frame", {Size = UDim2.new(1, 0, 0, 8), Position = UDim2.new(0, 0, 0.5, -4), BackgroundColor3 = T.Off,
+        BorderSizePixel = 0}, cbRow)
+    corner(cbTrack, 4)
+    UI.CakeBar = mk("Frame", {Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = T.Accent, BorderSizePixel = 0}, cbTrack)
+    corner(UI.CakeBar, 4)
+    UI.CakeInfo = UI.Info(cg, "Mobs killed in this server: - / 500", 54)
+    UI.Button(cg, "🔍 Check kill count now", Color3.fromRGB(40, 90, 110), function()
+        task.spawn(function()
+            if State.Sea ~= 3 then Utils.Notify("Cake Prince exists only in Sea 3", 4, "warn"); return end
+            CakeP.Poll(true)
+            local k, src = CakeP.Count()
+            Log("Cake Prince: " .. k .. "/" .. CakeP.NEED .. " (" .. src .. "), drip_mama reply: " .. tostring(CakeP.LastReply))
+            Utils.Notify("Cake Prince: " .. k .. "/" .. CakeP.NEED .. " (" .. src .. ")", 5, "info")
+            pcall(CakeP.UpdateUI)
+        end)
+    end)
+    UI.Info(cg, "The count is per server (every player adds to it) and is read again in each server you join. Needs no Sweet Chalice (a chalice in hand would spawn the Dough King). Pauses Auto Farm / Boss / Chest / Fruit while it runs. Uses your selected weapon + attack method.", 66)
+
+    -- Sea 3 only: Auto Pirate Raid (the whole card is hidden in other seas)
+    local prg = UI.Group(evt, "Pirate Raid  ·  Sea 3", true)
+    UI.PirateBox = prg.Parent
+    UI.PirateBox.Visible = (State.Sea == 3)
+    UI.Toggle(prg, "Auto Pirate Raid", "Castle on the Sea event (every 1 h 15 min): flies there, kills the pirates, tank last for the fruit",
+        function() return State.AutoPirateRaid end, function(v)
+            State.AutoPirateRaid = v
+            if v then
+                State.AutoEquip = true
+                if State.Sea ~= 3 then Utils.Notify("Pirate Raid exists only in Sea 3", 5, "warn") end
+            elseif PRaid.Active then
+                PRaid.Release()
+            end
+            if UI.RefreshAll then pcall(UI.RefreshAll) end
+        end)
+    UI.PirateInfo = UI.Info(prg, "Status: Off", 40)
+    UI.Info(prg, "Starts by itself every 1 h 15 min. Any kill = 100 Fragments; the LAST hit on the tanky enemy = a random fruit. Pauses Auto Farm / Cake Prince while it runs and uses your selected weapon + attack method.", 66)
+
     -- ======== BOSS ========
     local bot = UI.TabFrames["Boss"]
     local b1 = UI.Group(bot, "Boss farm", true)
@@ -7074,6 +7430,13 @@ function UI.Build()
     UI.Toggle(c1, "Fast Attack", "Attacks without touching the screen", function() return State.FastAttack end, function(v) State.FastAttack = v end)
     UI.Toggle(c1, "Hit All Mobs In Range", "Also hits nearby mobs, not only the target", function() return State.HitAll end, function(v) State.HitAll = v end)
     UI.Toggle(c1, "Auto Close Mode", "Moves next to the mob if no damage lands", function() return State.AutoClose end, function(v) State.AutoClose = v end)
+    local hg = UI.Group(vt, "Haki & abilities", true)
+    UI.Toggle(hg, "Auto Buso Haki", nil, function() return State.AutoHaki end, function(v) State.AutoHaki = v end)
+    UI.Toggle(hg, "Auto Instinct (Observation)", "Presses E for you: keeps Instinct on. You must already own it", function() return State.AutoInstinct end, function(v) State.AutoInstinct = v end)
+    UI.Toggle(hg, "Auto Race V3/V4", "Always on: uses the V3 ability (T) and transforms into V4 (Y) whenever the bar is full. Only what you own",
+        function() return State.AutoRace end, function(v) State.AutoRace = v end)
+
+    UI.AbilityStatus = UI.Info(hg, "Race: Off\nInstinct: Off", 28)
     local c2 = UI.Group(vt, "Method & speed", true)
     UI.Selector(c2, "Attack method", ATTACK_MODES, function() return State.AttackMode end, function(v) State.AttackMode = v end)
     UI.Selector(c2, "Attack speed", SPEEDS, function() return State.AttackSpeed end, function(v) State.AttackSpeed = v end)
@@ -7461,12 +7824,18 @@ function UI.Update()
                 UI.QuestSub.Text = sub
             end
         end
-    elseif tab == "Farm" then
+    elseif tab == "Events" then
         pcall(CakeP.UpdateUI)
+        pcall(PRaid.UpdateUI)
+        if UI.FactoryBox then UI.FactoryBox.Visible = (State.Sea == 2) end
+        if UI.EventsSea1 then UI.EventsSea1.Visible = (State.Sea == 1) end
         if UI.FactoryStatus then
-            UI.FactoryStatus.Text = "Race: " .. tostring(Combat.RaceStatus) .. "\nFactory: " .. Factory.Describe() .. (Factory.Done > 0 and ("  ·  Core kills: " .. Factory.Done) or "")
+            UI.FactoryStatus.Text = "Status: " .. Factory.Describe() .. (Factory.Done > 0 and ("  ·  Core kills: " .. Factory.Done) or "")
         end
     elseif tab == "Combat" then
+        if UI.AbilityStatus then
+            UI.AbilityStatus.Text = "Race: " .. tostring(Combat.RaceStatus) .. "\nInstinct: " .. tostring(Combat.InstinctStatus)
+        end
         if UI.CombatInfo then
             UI.CombatInfo.Text = string.format("Active: %s  |  Net: %s  |  CF: %s%s",
                 Combat.Mode(), Combat.FindNet() and "yes" or "no", Combat.Framework() and "yes" or "no",
@@ -7686,6 +8055,7 @@ local function Init()
     Farm.BossLoop()
     Combat.Loop()
     Combat.AutoHakiLoop()
+    Combat.AutoInstinctLoop()
     Combat.AutoRaceLoop()
     AutoStat.Loop()
     FruitSniper.Loop()
@@ -7697,6 +8067,7 @@ local function Init()
     Raid.Loop()
     Factory.Loop()
     CakeP.Loop()
+    PRaid.Loop()
     startTrackers()
 
     if UI.RefreshAll then pcall(UI.RefreshAll) end
