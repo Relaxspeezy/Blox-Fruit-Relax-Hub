@@ -512,6 +512,7 @@ local State = {
     AutoSea3 = false,
     AutoRaid = false,
     AutoFactory = false,
+    AutoCakePrince = false,
     RaidChip = "Flame",
     RaidLimit = 0,
     InstantTP = false,
@@ -568,7 +569,7 @@ local State = {
 }
 
 local UI, ServerHop, ConfigManager = {}, {}, {FileName = "RelaxHub_BloxFruits_Config.json"}
-local Farm, Quest, Combat, Flight, Diag, AutoStat, FPS, Shop, AutoSea, Raid, Factory = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+local Farm, Quest, Combat, Flight, Diag, AutoStat, FPS, Shop, AutoSea, Raid, Factory, CakeP = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
 
 local function Paused() return os.clock() < State.PausedUntil end
 local function Pause(sec) State.PausedUntil = math.max(State.PausedUntil, os.clock() + sec) end
@@ -697,6 +698,11 @@ function Utils.CommF()
         end
     end
     return commF
+end
+
+-- true while an event feature (Auto Factory / Auto Cake Prince) controls the character: farm / boss / chest / fruit pause
+function Utils.EventBusy()
+    return (Factory.Active or CakeP.Active) and true or false
 end
 
 function Utils.Invoke(...)
@@ -920,7 +926,7 @@ function Flight.To(target, tol, cancel)
 
     local function stop()
         if not State.Running then return true end
-        if Factory.Active and not Factory.Mine then return true end
+        if (Factory.Active and not Factory.Mine) or (CakeP.Active and not CakeP.Mine) then return true end
         return cancel ~= nil and cancel() == true
     end
     local function finish(ok)
@@ -1305,10 +1311,10 @@ function Combat.Loop()
     task.spawn(function()
         while State.Running do
             if State.InCombat and not State.Traveling and not Paused() and not Combat.Testing
-                and (State.AutoFarm or State.AutoBoss or Raid.Active or Factory.Active) then
+                and (State.AutoFarm or State.AutoBoss or Raid.Active or Utils.EventBusy()) then
                 pcall(function()
-                    Combat.Equip(Factory.Active)
-                    local boss = (State.AutoBoss and not State.AutoFarm and not Raid.Active) or Factory.Active
+                    Combat.Equip(Utils.EventBusy())
+                    local boss = (State.AutoBoss and not State.AutoFarm and not Raid.Active) or Utils.EventBusy()
                     local want = State.TargetMob
                     if want == "-" or want == "" or (State.HitAll and not boss) then want = nil end
                     local targets = Farm.Nearby(State.AttackRange, want, boss)
@@ -2794,7 +2800,7 @@ function Farm.Engage(mobName, isBoss)
     local startedAt = os.clock()
     local safePos
     local function enabled()
-        if Factory.Active then return false end
+        if Utils.EventBusy() then return false end
         if isBoss then return State.AutoBoss end
         return State.AutoFarm
     end
@@ -3083,7 +3089,7 @@ end
 function Farm.Loop()
     task.spawn(function()
         while State.Running do
-            if State.AutoFarm and not Paused() and not State.RateLimit and not Raid.Active and not Factory.Active then
+            if State.AutoFarm and not Paused() and not State.RateLimit and not Raid.Active and not Utils.EventBusy() then
                 if State.LevelGoal > 0 and Farm.Level() >= State.LevelGoal then
                     State.AutoFarm = false
                     State.HoldCF, State.GatherPoint, State.InCombat = nil, nil, false
@@ -3099,12 +3105,12 @@ function Farm.Loop()
                     task.wait(0.05)
                 end
             else
-                if not State.AutoBoss and not State.AutoChest and not State.AutoFruit and not Raid.Active and not Factory.Active then
+                if not State.AutoBoss and not State.AutoChest and not State.AutoFruit and not Raid.Active and not Utils.EventBusy() then
                     State.HoldCF, State.GatherPoint = nil, nil
                     State.InCombat = false
                 end
                 if not State.AutoFarm then Farm.SpawnWaitSince = nil end
-                if not State.AutoFarm and not State.AutoBoss and not State.AutoChest and not State.AutoFruit and not Raid.Active and not Factory.Active then
+                if not State.AutoFarm and not State.AutoBoss and not State.AutoChest and not State.AutoFruit and not Raid.Active and not Utils.EventBusy() then
                     State.Status = "Idle"
                 end
                 task.wait(0.4)
@@ -3136,7 +3142,7 @@ function Farm.BossLoop()
     task.spawn(function()
         local fighting
         while State.Running do
-            if State.AutoBoss and State.SelectedBoss ~= "" and not State.AutoFarm and not Paused() and not Raid.Active and not Factory.Active then
+            if State.AutoBoss and State.SelectedBoss ~= "" and not State.AutoFarm and not Paused() and not Raid.Active and not Utils.EventBusy() then
                 local ok, err = pcall(function()
                     if #Farm.Alive(State.SelectedBoss, math.huge, true) > 0 then
                         fighting = State.SelectedBoss
@@ -3286,7 +3292,7 @@ end
 function FruitSniper.Loop()
     task.spawn(function()
         local active = false
-        local function off() return not State.AutoFruit or State.AutoFarm or Farm.BossBusy or Raid.Active or Factory.Active end
+        local function off() return not State.AutoFruit or State.AutoFarm or Farm.BossBusy or Raid.Active or Utils.EventBusy() end
         while State.Running do
             if not off() and not Paused() then
                 active = true
@@ -3415,7 +3421,7 @@ function ChestFarm.Loop()
     task.spawn(function()
         local active = false
         local function off()
-            return not State.AutoChest or State.AutoFarm or Farm.BossBusy or FruitSniper.Busy or Raid.Active or Factory.Active
+            return not State.AutoChest or State.AutoFarm or Farm.BossBusy or FruitSniper.Busy or Raid.Active or Utils.EventBusy()
         end
         while State.Running do
             if not off() and not Paused() then
@@ -3488,7 +3494,7 @@ function ServerHop.AutoHopLoop()
     task.spawn(function()
         while State.Running do
             task.wait(Utils.RandomDelay(180, 30))
-            if State.AutoServerHop and not Raid.Active and not Factory.Active then ServerHop.Hop() end
+            if State.AutoServerHop and not Raid.Active and not Utils.EventBusy() then ServerHop.Hop() end
         end
     end)
 end
@@ -3714,7 +3720,7 @@ end
 -- ============================================================
 local SAVE_KEYS = {
     "AutoFarm","AutoQuest","QuestWatch","BringMobs","FastAttack","AutoClose","AutoEquip","AutoHaki","AutoRace","AutoStats","AutoBoss","AutoChest","AutoFruit",
-    "AutoSea2","AutoSea3","AutoFactory","RaidChip","RaidLimit",
+    "AutoSea2","AutoSea3","AutoFactory","AutoCakePrince","RaidChip","RaidLimit",
     "InstantTP","HitAll","SignalMonitor","FPSBoost","AutoSave","AutoRejoin","Toasts","HumanizeLevel","FlySpeed","HoverHeight","GatherRadius",
     "AttackSpeed","AttackRange","SafeHP","LevelGoal",
     "WinScale","AttackMode","WeaponType","StatType","FarmTargetMob","SelectedBoss",
@@ -3796,7 +3802,7 @@ function ConfigManager.Load()
 end
 
 function ConfigManager.Reset()
-    for _, k in ipairs({"AutoFarm","AutoHaki","AutoRace","AutoStats","AutoBoss","AutoChest","AutoFruit","AutoSea2","AutoSea3","AutoRaid","AutoFactory","ESPEnabled","InstantTP","FPSBoost"}) do State[k] = false end
+    for _, k in ipairs({"AutoFarm","AutoHaki","AutoRace","AutoStats","AutoBoss","AutoChest","AutoFruit","AutoSea2","AutoSea3","AutoRaid","AutoFactory","AutoCakePrince","ESPEnabled","InstantTP","FPSBoost"}) do State[k] = false end
     State.AutoQuest, State.BringMobs, State.FastAttack, State.AutoEquip, State.SignalMonitor = true, true, true, true, true
     State.AutoClose, State.AutoSave, State.AutoRejoin, State.Toasts = true, true, true, true
     State.QuestWatch = true
@@ -5300,7 +5306,7 @@ function Raid.Loop()
                     raidNag("Raid chips need level " .. RAID_MIN_LEVEL .. "+ (you are level " .. Farm.Level() .. ")", "warn", 60)
                     return
                 end
-                if Paused() or State.Hopping or AutoSea.Running or Factory.Active then return end
+                if Paused() or State.Hopping or AutoSea.Running or Utils.EventBusy() then return end
 
                 Raid.Active = true
                 local ok, err = pcall(Raid.Cycle)
@@ -5464,7 +5470,7 @@ function Factory.Loop()
                     return
                 end
                 if State.Sea ~= 2 then Factory.Status = "The Factory event exists only in Sea 2"; return end
-                if Raid.Active or AutoSea.Running or Paused() or State.Hopping then
+                if Raid.Active or CakeP.Active or AutoSea.Running or Paused() or State.Hopping then
                     Factory.Status = "Waiting (another task is running)"
                     return
                 end
@@ -5486,6 +5492,492 @@ function Factory.Loop()
             end)
         end
     end)
+end
+
+-- ============================================================
+-- CAKE PRINCE  (Sea 3 only)
+-- ============================================================
+-- How the game works (Blox Fruits Fandom wiki: Cake Prince / Dimensional Shift):
+--   1) kill 500 enemies on Cake Land. The count is per SERVER and cumulative: every player in the server adds to it.
+--   2) talk to drip_mama (house behind the Cake Quest giver). When 500 are reached she asks "Do you want to open the portal now?".
+--   3) the portal is the big mirror behind her house. Inside the Dimensional Shift the Cake Prince spawns (gone after ~7.5 min).
+--   A Sweet Chalice in hand makes her open the stronger dimension with the Dough King instead, so this feature never equips one.
+-- Auto Cake Prince loops: farm Cake Land mobs -> drip_mama -> mirror -> kill Cake Prince -> repeat.
+-- The kill counter (x/500) is read from the server through the same remote drip_mama uses and is shown in every server you join.
+-- If the server reply cannot be read, the counter falls back to the kills this script made itself.
+CakeP.NEED = 500
+CakeP.MOBS = {"Cookie Crafter", "Cake Guard", "Baking Staff", "Head Baker"}   -- the Cake Land enemies
+CakeP.LAND = Vector3.new(-1975, 40, -12430)       -- middle of Cake Land (between the two quest givers)
+CakeP.NPC_POS = Vector3.new(-2022, 40, -12031)    -- fallback place for drip_mama (next to the Cake Quest giver)
+CakeP.Active = false      -- true while Auto Cake Prince controls the character (farm / boss / chest / fruit pause)
+CakeP.Mine = false        -- true only around its own flights
+CakeP.Status = "Off"
+CakeP.Done = 0            -- Cake Princes defeated this session
+CakeP.Killed = nil        -- kills in THIS server according to the server (nil = unknown)
+CakeP.Ready = false       -- server says the portal can be opened
+CakeP.PollOK = false
+CakeP.LastPoll = 0
+CakeP.LastReply = ""
+CakeP.LastSummon = ""
+CakeP.CoolUntil = 0
+CakeP.TrySummonAt = 0
+CakeP.SafeUntil = 0
+CakeP.Fails = 0
+CakeP.NpcCache, CakeP.NpcScanAt = nil, 0
+CakeP.G, CakeP.GName = nil, nil
+CakeP.JobId = nil
+
+function CakeP.Say(t)
+    CakeP.Status = t
+    State.Status = "Auto Cake Prince: " .. t
+end
+
+function CakeP.Fly(target, tol, cancel)
+    CakeP.Mine = true
+    local ok = Flight.To(target, tol, cancel)
+    CakeP.Mine = false
+    return ok
+end
+
+-- kills made by this script on Cake Land mobs (fallback counter)
+function CakeP.LocalKills()
+    local n = 0
+    for _, name in ipairs(CakeP.MOBS) do n = n + Farm.KillsFor(name) end
+    return n
+end
+
+-- (kills, source text)
+function CakeP.Count()
+    if CakeP.Killed then return math.clamp(CakeP.Killed, 0, CakeP.NEED), "server count" end
+    return math.min(CakeP.LocalKills(), CakeP.NEED), "only my kills: server count unreadable"
+end
+
+function CakeP.IsReady()
+    if CakeP.Ready then return true end
+    -- server reply unreadable but I killed enough myself: try to open the portal now and then
+    return CakeP.Killed == nil and CakeP.LocalKills() >= CakeP.NEED and os.clock() >= CakeP.TrySummonAt
+end
+
+-- Reads the reply of drip_mama. Known texts: "...500 enemies must be defeated on Cake Land..." (with the remaining number)
+-- and "We have defeated enough enemies. Do you want to open the portal now?" when the portal can be opened.
+function CakeP.Parse(res)
+    if res == nil then return end
+    local s = tostring(res)
+    CakeP.LastReply = s
+    local low = s:lower()
+    if low:find("open the portal", 1, true) or low:find("defeated enough", 1, true) then
+        CakeP.Ready, CakeP.Killed = true, CakeP.NEED
+        return
+    end
+    local n = tonumber(low:match("(%d+)"))
+    if not n then return end
+    CakeP.Ready = false
+    local remaining
+    if low:find("more", 1, true) or low:find("remain", 1, true) or low:find("left", 1, true)
+        or low:find("must", 1, true) or low:find("need", 1, true) then
+        remaining = n
+    elseif low:find("defeated", 1, true) or low:find("killed", 1, true) then
+        CakeP.Killed = math.clamp(n, 0, CakeP.NEED)
+        return
+    else
+        remaining = n
+    end
+    CakeP.Killed = math.clamp(CakeP.NEED - remaining, 0, CakeP.NEED)
+end
+
+function CakeP.Poll(force)
+    if State.Sea ~= 3 or State.RateLimit then return end
+    if not force and os.clock() - CakeP.LastPoll < 8 then return end
+    CakeP.LastPoll = os.clock()
+    local ok, res = Utils.InvokeEx("CakePrinceSpawner", true)
+    CakeP.PollOK = ok and res ~= nil
+    if CakeP.PollOK then pcall(CakeP.Parse, res) end
+end
+
+-- drip_mama (cached; the full search only runs now and then)
+function CakeP.Npc()
+    if CakeP.NpcCache and CakeP.NpcCache.Parent then return CakeP.NpcCache end
+    CakeP.NpcCache = nil
+    local npcs = Workspace:FindFirstChild("NPCs")
+    local m = npcs and npcs:FindFirstChild("drip_mama")
+    if not m and os.clock() - CakeP.NpcScanAt > 15 then
+        CakeP.NpcScanAt = os.clock()
+        for _, d in ipairs(Workspace:GetDescendants()) do
+            if d:IsA("Model") and d.Name:lower() == "drip_mama" then m = d; break end
+        end
+    end
+    CakeP.NpcCache = m
+    return m
+end
+
+function CakeP.NpcPos()
+    local m = CakeP.Npc()
+    local r = m and Utils.ModelRoot(m)
+    return r and r.Position or CakeP.NPC_POS
+end
+
+-- the mirror (portal) behind her house: best effort, looks for a part called mirror / portal near drip_mama
+function CakeP.FindMirror()
+    local base = CakeP.NpcPos()
+    local best, bd
+    pcall(function()
+        for _, p in ipairs(Workspace:GetPartBoundsInRadius(base, 260)) do
+            local n = p.Name:lower()
+            if n:find("mirror", 1, true) or n:find("portal", 1, true) then
+                local d = Utils.Distance(p.Position, base)
+                if not bd or d < bd then best, bd = p, d end
+            end
+        end
+    end)
+    return best
+end
+
+function CakeP.Boss()
+    local en = Workspace:FindFirstChild("Enemies")
+    if not en then return nil end
+    for _, m in ipairs(en:GetChildren()) do
+        if m.Name:lower():find("cake prince", 1, true) then
+            local hum = m:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then return m, hum end
+        end
+    end
+    return nil
+end
+
+function CakeP.Release()
+    CakeP.Active, CakeP.Mine = false, false
+    State.HoldCF, State.InCombat, State.Traveling = nil, false, false
+    State.GatherPoint, State.GatherName = nil, nil
+    State.TargetMob = "-"
+    CakeP.G, CakeP.GName = nil, nil
+    Farm.Epoch = (Farm.Epoch or 0) + 1      -- Auto Farm picks its target again afterwards
+    pcall(Farm.CountKills)
+end
+
+-- Low HP: fly up and wait. Returns true when it did something.
+function CakeP.Recover(stop)
+    local hum, root = Utils.GetHumanoid(), Utils.GetRootPart()
+    if State.SafeHP <= 0 or not hum or not root or hum.MaxHealth <= 0 then return false end
+    if hum.Health / hum.MaxHealth * 100 >= State.SafeHP or os.clock() < CakeP.SafeUntil then return false end
+    State.InCombat, State.GatherPoint = false, nil
+    CakeP.Say("Low HP: recovering")
+    local up = root.Position + Vector3.new(0, 150, 0)
+    CakeP.Fly(up, 4, stop)
+    State.HoldCF = CFrame.new(up)
+    local r0 = os.clock()
+    while not stop() and os.clock() - r0 < 15 do
+        local h = Utils.GetHumanoid()
+        if not h or h.Health <= 0 or h.Health / h.MaxHealth * 100 >= 70 then break end
+        task.wait(0.5)
+    end
+    State.HoldCF = nil
+    CakeP.SafeUntil = os.clock() + 20
+    return true
+end
+
+-- alive Cake Land mobs, nearest first
+function CakeP.Mobs()
+    local list = {}
+    for _, n in ipairs(CakeP.MOBS) do
+        for _, m in ipairs(Farm.Alive(n, math.huge, false)) do table.insert(list, m) end
+    end
+    table.sort(list, function(a, b) return a.dist < b.dist end)
+    return list
+end
+
+-- one step of "kill Cake Land mobs"
+function CakeP.FarmStep(stop)
+    local root = Utils.GetRootPart()
+    if not root then return end
+    local mobs = CakeP.Mobs()
+
+    if #mobs == 0 then
+        -- none loaded: fly to the nearest Cake Land spawn so they stream in / respawn
+        State.InCombat, State.GatherPoint = false, nil
+        local best
+        for _, n in ipairs(CakeP.MOBS) do
+            local sp = Farm.NearestSpawn(n)
+            if sp and (not best or Utils.Distance(root.Position, sp) < Utils.Distance(root.Position, best)) then best = sp end
+        end
+        local H = (best or CakeP.LAND) + Vector3.new(0, Farm.Hover(), 0)
+        if Utils.Distance(root.Position, H) > 40 then
+            State.HoldCF = nil
+            CakeP.Say("flying to Cake Land")
+            if CakeP.Fly(H, 4, stop) then
+                CakeP.Fails = 0
+            elseif not stop() then
+                CakeP.Fails = CakeP.Fails + 1
+                task.wait(0.5)
+            end
+        else
+            State.HoldCF = CFrame.new(H)
+            CakeP.Say("waiting for Cake Land mobs")
+            task.wait(0.4)
+        end
+        return
+    end
+
+    for _, m in ipairs(mobs) do Farm.Tracked[m.model] = m.hum end
+    local gather = State.BringMobs and os.clock() > Farm.GatherBrokenUntil
+    local G
+    if gather then
+        -- keep pulling the same mob type to one point until none is left near it
+        local keep = false
+        if CakeP.G then
+            for _, m in ipairs(mobs) do
+                if cleanName(m.model.Name) == CakeP.GName and Utils.Distance(m.root.Position, CakeP.G) <= State.GatherRadius then keep = true; break end
+            end
+        end
+        if not keep then
+            CakeP.G = mobs[1].root.Position
+            CakeP.GName = cleanName(mobs[1].model.Name)
+        end
+        G = CakeP.G
+    else
+        G = clusterCenter(mobs)
+        CakeP.G = nil
+    end
+
+    local H = G + Vector3.new(0, Farm.Hover(), 0)
+    if Utils.Distance(root.Position, H) > (gather and 14 or 30) then
+        State.InCombat, State.HoldCF, State.GatherPoint = false, nil, nil
+        CakeP.Say("flying to " .. cleanName(mobs[1].model.Name))
+        if CakeP.Fly(H, 3, stop) then
+            CakeP.Fails = 0
+        elseif not stop() then
+            CakeP.Fails = CakeP.Fails + 1
+        end
+    end
+    root = Utils.GetRootPart()
+    if root and Utils.Distance(root.Position, H) < 40 then
+        State.HoldCF = lookCF(H, G)
+        State.InCombat = true
+        State.TargetMob = "-"
+        if gather then State.GatherPoint, State.GatherName = G, CakeP.GName else State.GatherPoint = nil end
+        local k = CakeP.Count()
+        CakeP.Say(string.format("killing Cake Land mobs (%d/%d)", k, CakeP.NEED))
+    end
+end
+
+-- fly to drip_mama and open the portal. Returns true when the request was sent.
+function CakeP.Summon(stop)
+    local t0 = os.clock()
+    CakeP.Say("flying to drip_mama")
+    while not stop() and os.clock() - t0 < 60 do
+        local root = Utils.GetRootPart()
+        if not root then return false end
+        local H = CakeP.NpcPos() + Vector3.new(0, 4, 0)
+        if Utils.Distance(root.Position, H) > 14 then
+            State.InCombat, State.HoldCF, State.GatherPoint = false, nil, nil
+            CakeP.Fly(H, 4, stop)
+        else
+            State.HoldCF = CFrame.new(H)
+            CakeP.Say("opening the portal at drip_mama")
+            local ok, res = Utils.InvokeEx("CakePrinceSpawner")
+            CakeP.LastSummon = ok and tostring(res) or ("error: " .. tostring(res))
+            Log("Cake Prince: drip_mama reply: " .. CakeP.LastSummon)
+            CakeP.TrySummonAt = os.clock() + 30
+            CakeP.Ready, CakeP.Killed = false, nil
+            task.wait(1.5)
+            State.HoldCF = nil
+            return true
+        end
+        task.wait(0.2)
+    end
+    return false
+end
+
+-- after the portal is open: walk into the mirror until the Cake Prince is there
+function CakeP.Enter(stop)
+    local t0, lastScan, mirror = os.clock(), -math.huge, nil
+    while not stop() and os.clock() - t0 < 90 do
+        if CakeP.Boss() then return true end
+        local root = Utils.GetRootPart()
+        if not root then return false end
+        if os.clock() - lastScan > 8 then
+            lastScan = os.clock()
+            mirror = CakeP.FindMirror()
+        end
+        State.InCombat = false
+        if mirror and mirror.Parent then
+            CakeP.Say("walking into the mirror")
+            local target = mirror.Position
+            if Utils.Distance(root.Position, target) > 5 then
+                CakeP.Fly(target, 3, stop)
+            else
+                State.HoldCF = CFrame.new(target)
+                task.wait(0.4)
+            end
+        else
+            CakeP.Say("waiting for the portal / Cake Prince")
+            local H = CakeP.NpcPos() + Vector3.new(0, 4, 0)
+            if Utils.Distance(root.Position, H) > 25 then CakeP.Fly(H, 4, stop) end
+            task.wait(0.5)
+        end
+        task.wait(0.2)
+    end
+    State.HoldCF = nil
+    return CakeP.Boss() ~= nil
+end
+
+-- Returns true when the Cake Prince is gone (killed)
+function CakeP.FightBoss(stop)
+    local t0, lastSeen, fails = os.clock(), os.clock(), 0
+    State.TargetMob = "Cake Prince"
+    State.GatherPoint = nil
+    CakeP.Say("Cake Prince spotted")
+    while not stop() do
+        local now = os.clock()
+        if Paused() or State.Hopping then return false end
+        if now - t0 > 540 then
+            Log("Cake Prince: gave up after 9 min", "WARN")
+            CakeP.CoolUntil = now + 30
+            return false
+        end
+        local hum, root = Utils.GetHumanoid(), Utils.GetRootPart()
+        if not hum or not root or hum.Health <= 0 then return false end
+
+        local boss, bhum = CakeP.Boss()
+        if boss then lastSeen = now elseif now - lastSeen > 4 then return true end
+
+        if CakeP.Recover(stop) then
+            -- recovered, next round
+        elseif boss then
+            local broot = Utils.ModelRoot(boss)
+            if broot then
+                Farm.Tracked[boss] = bhum
+                local G = broot.Position
+                local H = G + Vector3.new(0, Farm.Hover(), 0)
+                if Utils.Distance(root.Position, H) > 30 then
+                    State.InCombat, State.HoldCF = false, nil
+                    CakeP.Say("flying to the Cake Prince")
+                    if CakeP.Fly(H, 3, stop) then
+                        fails = 0
+                    elseif not stop() then
+                        fails = fails + 1
+                        if fails >= 4 then
+                            Log("Cake Prince: could not reach the boss", "WARN")
+                            CakeP.CoolUntil = os.clock() + 60
+                            return false
+                        end
+                        task.wait(0.5)
+                    end
+                end
+                root = Utils.GetRootPart()
+                if root and Utils.Distance(root.Position, H) < 40 then
+                    fails = 0
+                    State.HoldCF = lookCF(H, G)
+                    State.InCombat = true
+                    CakeP.Say("fighting the Cake Prince (" .. tostring(State.WeaponType) .. " · " .. tostring(State.AttackMode) .. ")")
+                end
+            end
+        end
+        task.wait(0.1)
+        Farm.CountKills()
+    end
+    return false
+end
+
+-- one full run. Returns true when a Cake Prince was killed.
+function CakeP.Cycle()
+    local function stop() return (not State.Running) or (not State.AutoCakePrince) or Raid.Active or Factory.Active end
+    State.TargetMob = "-"
+    CakeP.Fails = 0
+    task.wait(0.3)                          -- let the other loops let go of the character
+    while not stop() do
+        if Paused() or State.Hopping then return false end
+        local hum, root = Utils.GetHumanoid(), Utils.GetRootPart()
+        if not hum or not root or hum.Health <= 0 then return false end
+
+        if CakeP.Boss() then return CakeP.FightBoss(stop) end   -- already out (another player opened it)
+
+        CakeP.Poll()
+        if CakeP.Recover(stop) then
+            -- recovered, next round
+        elseif CakeP.IsReady() then
+            if not CakeP.Summon(stop) then return false end
+            if CakeP.Enter(stop) then return CakeP.FightBoss(stop) end
+            if not stop() then
+                Log("Cake Prince: the portal did not lead to a boss (reply: " .. tostring(CakeP.LastSummon) .. ")", "WARN")
+                CakeP.CoolUntil = os.clock() + 20
+            end
+            return false
+        else
+            CakeP.FarmStep(stop)
+            if CakeP.Fails >= 4 then
+                Log("Cake Prince: could not reach Cake Land", "WARN")
+                CakeP.CoolUntil = os.clock() + 30
+                return false
+            end
+        end
+        task.wait(0.1)
+        Farm.CountKills()
+    end
+    return false
+end
+
+function CakeP.Describe()
+    if State.Sea ~= 3 then return "Sea 3 only" end
+    if not State.AutoCakePrince then return "Off" end
+    return CakeP.Status
+end
+
+function CakeP.Loop()
+    task.spawn(function()
+        local announced = false
+        while State.Running do
+            task.wait(1.5)
+            pcall(function()
+                if State.Sea ~= 3 then CakeP.Status = "Sea 3 only"; return end
+                -- the counter is read in every server you enter, even when the toggle is off
+                CakeP.Poll()
+                if not announced and CakeP.PollOK then
+                    announced = true
+                    local k, src = CakeP.Count()
+                    Utils.Notify("Cake Prince: " .. k .. "/" .. CakeP.NEED .. " mobs killed in this server", 6, "info")
+                    Log("Cake Prince: " .. k .. "/" .. CakeP.NEED .. " (" .. src .. "), drip_mama reply: " .. tostring(CakeP.LastReply))
+                end
+                if not State.AutoCakePrince then
+                    if CakeP.Active then CakeP.Release() end
+                    CakeP.Status = "Off"
+                    return
+                end
+                if Raid.Active or Factory.Active or AutoSea.Running or Paused() or State.Hopping then
+                    CakeP.Status = "Waiting (another task is running)"
+                    return
+                end
+                if os.clock() < CakeP.CoolUntil then return end
+
+                CakeP.Active = true
+                local ok, res = pcall(CakeP.Cycle)
+                CakeP.Release()
+                if not ok then
+                    Log("Cake Prince error: " .. tostring(res), "WARN")
+                    task.wait(2)
+                elseif res then
+                    CakeP.Done = CakeP.Done + 1
+                    CakeP.Killed, CakeP.Ready = nil, false
+                    CakeP.LastPoll = 0
+                    CakeP.Status = "Cake Prince defeated (#" .. CakeP.Done .. ")"
+                    Log("Cake Prince defeated (#" .. CakeP.Done .. ")")
+                    Utils.Notify("Cake Prince defeated", 5, "success")
+                end
+            end)
+        end
+    end)
+end
+
+-- refreshes the Cake Prince card (visible only in Sea 3)
+function CakeP.UpdateUI()
+    if UI.CakeBox then UI.CakeBox.Visible = (State.Sea == 3) end
+    if State.Sea ~= 3 then return end
+    local k, src = CakeP.Count()
+    if UI.CakeBar then UI.CakeBar.Size = UDim2.new(math.clamp(k / CakeP.NEED, 0, 1), 0, 1, 0) end
+    if UI.CakeInfo then
+        UI.CakeInfo.Text = string.format("Mobs killed in this server: %d / %d  (%s)%s\nStatus: %s%s",
+            k, CakeP.NEED, src, CakeP.Ready and "  ·  PORTAL READY" or "", CakeP.Describe(),
+            CakeP.Done > 0 and ("\nCake Prince defeated: " .. CakeP.Done) or "")
+    end
 end
 
 -- ============================================================
@@ -6216,6 +6708,40 @@ function UI.Build()
             if UI.RefreshAll then pcall(UI.RefreshAll) end
         end)
     UI.FactoryStatus = UI.Info(g1, "Race: Off\nFactory: Off", 28)
+
+    -- Sea 3 only: Auto Cake Prince (the whole card is hidden in other seas)
+    local cg = UI.Group(ft, "Cake Prince  ·  Sea 3", true)
+    UI.CakeBox = cg.Parent
+    UI.CakeBox.Visible = (State.Sea == 3)
+    UI.Toggle(cg, "Auto Cake Prince", "500 Cake Land mobs -> drip_mama -> portal -> kills the Cake Prince, then repeats",
+        function() return State.AutoCakePrince end, function(v)
+            State.AutoCakePrince = v
+            if v then
+                State.AutoEquip = true
+                if State.Sea ~= 3 then Utils.Notify("Cake Prince exists only in Sea 3", 5, "warn") end
+            elseif CakeP.Active then
+                CakeP.Release()
+            end
+            if UI.RefreshAll then pcall(UI.RefreshAll) end
+        end)
+    local cbRow = newRow(cg, 14)
+    local cbTrack = mk("Frame", {Size = UDim2.new(1, 0, 0, 8), Position = UDim2.new(0, 0, 0.5, -4), BackgroundColor3 = T.Off,
+        BorderSizePixel = 0}, cbRow)
+    corner(cbTrack, 4)
+    UI.CakeBar = mk("Frame", {Size = UDim2.new(0, 0, 1, 0), BackgroundColor3 = T.Accent, BorderSizePixel = 0}, cbTrack)
+    corner(UI.CakeBar, 4)
+    UI.CakeInfo = UI.Info(cg, "Mobs killed in this server: - / 500", 54)
+    UI.Button(cg, "🔍 Check kill count now", Color3.fromRGB(40, 90, 110), function()
+        task.spawn(function()
+            if State.Sea ~= 3 then Utils.Notify("Cake Prince exists only in Sea 3", 4, "warn"); return end
+            CakeP.Poll(true)
+            local k, src = CakeP.Count()
+            Log("Cake Prince: " .. k .. "/" .. CakeP.NEED .. " (" .. src .. "), drip_mama reply: " .. tostring(CakeP.LastReply))
+            Utils.Notify("Cake Prince: " .. k .. "/" .. CakeP.NEED .. " (" .. src .. ")", 5, "info")
+            pcall(CakeP.UpdateUI)
+        end)
+    end)
+    UI.Info(cg, "The count is per server (every player adds to it) and is read again in each server you join. Needs no Sweet Chalice (a chalice in hand would spawn the Dough King). Pauses Auto Farm / Boss / Chest / Fruit while it runs. Uses your selected weapon + attack method.", 66)
     UI.Toggle(g1, "Auto Stat Points", nil, function() return State.AutoStats end, function(v) State.AutoStats = v end)
 
     local g2 = UI.Group(ft, "Loadout", true)
@@ -6695,6 +7221,7 @@ function UI.Update()
             end
         end
     elseif tab == "Farm" then
+        pcall(CakeP.UpdateUI)
         if UI.FactoryStatus then
             UI.FactoryStatus.Text = "Race: " .. tostring(Combat.RaceStatus) .. "\nFactory: " .. Factory.Describe() .. (Factory.Done > 0 and ("  ·  Core kills: " .. Factory.Done) or "")
         end
@@ -6869,6 +7396,7 @@ local function Cleanup()
     State.Running = false
     Raid.Active = false
     Factory.Active = false
+    CakeP.Active = false
     State.HoldCF, State.GatherPoint, State.Traveling, State.InCombat = nil, nil, false, false
     for _, c in ipairs(State.Connections) do pcall(function() c:Disconnect() end) end
     State.Connections = {}
@@ -6927,6 +7455,7 @@ local function Init()
     AutoSea.Loop()
     Raid.Loop()
     Factory.Loop()
+    CakeP.Loop()
     startTrackers()
 
     if UI.RefreshAll then pcall(UI.RefreshAll) end
