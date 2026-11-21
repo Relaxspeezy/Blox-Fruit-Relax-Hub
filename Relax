@@ -587,8 +587,20 @@ end
 -- ============================================================
 local Utils = {}
 
+-- cached string.lower (pure function, bounded cache)
+Utils._lc, Utils._lcN = {}, 0
+function Utils.Lower(s)
+    local v = Utils._lc[s]
+    if v then return v end
+    v = string.lower(s)
+    if Utils._lcN >= 3000 then Utils._lc, Utils._lcN = {}, 0 end
+    Utils._lc[s] = v
+    Utils._lcN = Utils._lcN + 1
+    return v
+end
+
 function Utils.Has(s, sub)
-    return string.find(string.lower(s), string.lower(sub), 1, true) ~= nil
+    return string.find(Utils.Lower(s), Utils.Lower(sub), 1, true) ~= nil
 end
 
 function Utils.RandomDelay(base, variance)
@@ -647,9 +659,16 @@ function Utils.Num(n)
     return s
 end
 
+Utils._cn, Utils._cnN = {}, 0
 local function cleanName(n)
+    local hit = Utils._cn[n]
+    if hit then return hit end
+    local srcName = n
     n = n:gsub("%s*%[.-%]", ""):gsub("%s*%(.-%)", "")
     n = n:gsub("%s+$", ""):gsub("^%s+", "")
+    if Utils._cnN >= 3000 then Utils._cn, Utils._cnN = {}, 0 end
+    Utils._cn[srcName] = n
+    Utils._cnN = Utils._cnN + 1
     return n
 end
 
@@ -795,7 +814,7 @@ function Registry.Init()
             if not State.Running then return end
             classify(inst)
             count = count + 1
-            if count % 400 == 0 then task.wait() end
+            if count % 250 == 0 then task.wait() end
         end
     end)
 end
@@ -878,11 +897,13 @@ function Flight.Lock(root, on)
 end
 
 function Flight.Init()
+    local wasNeed = false
     table.insert(State.Connections, RunService.Heartbeat:Connect(function()
         local root = Utils.GetRootPart()
         if not root then return end
         local need = State.Traveling or State.HoldCF ~= nil or os.clock() < State.LockUntil
-        Flight.Lock(root, need)
+        if need or wasNeed then Flight.Lock(root, need) end
+        wasNeed = need
         if need and not State.Traveling then
             local cf = State.HoldCF
             if cf then
@@ -900,17 +921,31 @@ function Flight.Init()
             root.AssemblyAngularVelocity = ZERO
         end
     end))
+    local colChar, colParts, colAt = nil, {}, 0
     table.insert(State.Connections, RunService.Stepped:Connect(function()
         if State.Traveling or State.HoldCF or os.clock() < State.LockUntil then
             local char = LocalPlayer.Character
             if char then
-                for _, p in ipairs(char:GetChildren()) do
-                    if p:IsA("BasePart") and p.CanCollide then p.CanCollide = false end
+                local now = os.clock()
+                if char ~= colChar or now - colAt > 0.5 then
+                    colChar, colAt = char, now
+                    colParts = {}
+                    for _, p in ipairs(char:GetChildren()) do
+                        if p:IsA("BasePart") then colParts[#colParts + 1] = p end
+                    end
+                end
+                for i = 1, #colParts do
+                    local p = colParts[i]
+                    if p.CanCollide then p.CanCollide = false end
                 end
             end
         end
     end))
+    local lastVoidChk = 0
     table.insert(State.Connections, RunService.Heartbeat:Connect(function()
+        local nowV = os.clock()
+        if nowV - lastVoidChk < 0.2 then return end
+        lastVoidChk = nowV
         local root = Utils.GetRootPart()
         if root and root.Position.Y < -80 and not State.Traveling then
             pcall(function() root.CFrame = CFrame.new(root.Position.X, 60, root.Position.Z) end)
@@ -1548,13 +1583,25 @@ function Farm.EnemiesFolder()
     return enemiesCache
 end
 
-function Farm.IsFarmable(model)
+function Farm.IsFarmableRaw(model)
     if model == LocalPlayer.Character or Players:GetPlayerFromCharacter(model) then return false end
     local enemies = Farm.EnemiesFolder()
     if enemies then return model:IsDescendantOf(enemies) end
     local npcs = Workspace:FindFirstChild("NPCs")
     if npcs and model:IsDescendantOf(npcs) then return false end
     return true
+end
+
+-- result is cached for a short time per model (it is checked for every mob, several times per frame)
+Farm._fOK = setmetatable({}, {__mode = "k"})
+Farm._fAt = setmetatable({}, {__mode = "k"})
+function Farm.IsFarmable(model)
+    local now = os.clock()
+    local at = Farm._fAt[model]
+    if at and now - at < 0.75 then return Farm._fOK[model] end
+    local v = Farm.IsFarmableRaw(model)
+    Farm._fOK[model], Farm._fAt[model] = v, now
+    return v
 end
 
 function Farm.Level()
@@ -1564,7 +1611,7 @@ end
 
 function Farm.NameIs(modelName, target, loose)
     if loose then return Utils.Has(modelName, target) end
-    return cleanName(modelName):lower() == target:lower()
+    return Utils.Lower(cleanName(modelName)) == Utils.Lower(target)
 end
 
 local spawnCache, spawnCacheT = nil, 0
@@ -1774,10 +1821,12 @@ function Farm.GatherInit()
         local p, name = State.GatherPoint, State.GatherName
         if not p or not name then return end
         for model, hum in pairs(Registry.Mobs) do
-            if model.Parent and hum.Health > 0 and not Farm.IsUnpullable(model)
-                and Farm.NameIs(model.Name, name, false) and Farm.IsFarmable(model) then
+            if model.Parent and hum.Health > 0 then
                 local root = model:FindFirstChild("HumanoidRootPart")
-                if root and Utils.Distance(root.Position, p) < State.GatherRadius and Farm.Owned(root) then
+                if root and Utils.Distance(root.Position, p) < State.GatherRadius
+                    and not Farm.IsUnpullable(model)
+                    and Farm.NameIs(model.Name, name, false) and Farm.IsFarmable(model)
+                    and Farm.Owned(root) then
                     local slot = Farm.SlotOf(model)
                     local ang = slot * 2.399963
                     local rad = 1 + 0.9 * math.sqrt(slot)
@@ -3383,7 +3432,7 @@ function ChestFarm.Scan()
     local n = 0
     for _, d in ipairs(Workspace:GetDescendants()) do
         n = n + 1
-        if n % 2000 == 0 then task.wait() end
+        if n % 1000 == 0 then task.wait() end
         if Utils.IsChest(d) then
             local p = d.Parent
             local inside = d:IsA("BasePart") and p and p:IsA("Model") and Utils.IsChest(p)
@@ -3467,7 +3516,7 @@ function ChestFarm.Loop()
             if not off() and not Paused() then
                 active = true
                 local ok, err = pcall(function()
-                    if os.clock() - ChestFarm.LastScan > 12 then ChestFarm.Scan() end
+                    if os.clock() - ChestFarm.LastScan > 20 then ChestFarm.Scan() end
                     local part, model = ChestFarm.Nearest()
                     if part then
                         State.Status = "Flying to chest"
@@ -3542,7 +3591,7 @@ end
 -- ============================================================
 -- ESP
 -- ============================================================
-local ESP = {Objects = {}}
+local ESP = {Objects = {}, ChestPart = setmetatable({}, {__mode = "k"})}
 
 local function createBillboard(adornee, text, color)
     local bb = Instance.new("BillboardGui")
@@ -3565,10 +3614,11 @@ end
 
 local function espSet(key, adornee, text, color)
     local d = ESP.Objects[key]
-    if d and d.gui.Parent then d.lbl.Text = text
+    if d and d.gui.Parent then
+        if d.txt ~= text then d.lbl.Text = text; d.txt = text end
     else
         local bb, lbl = createBillboard(adornee, text, color)
-        ESP.Objects[key] = {gui = bb, lbl = lbl}
+        ESP.Objects[key] = {gui = bb, lbl = lbl, txt = text}
     end
 end
 
@@ -3618,9 +3668,14 @@ function ESP.Update()
     if State.ESPChest then
         for model in pairs(Registry.Chests) do
             if model.Parent then
-                local part = model:IsA("BasePart") and model
-                    or model.PrimaryPart
-                    or model:FindFirstChildWhichIsA("BasePart", true)
+                local part = model:IsA("BasePart") and model or model.PrimaryPart
+                if not part then
+                    part = ESP.ChestPart[model]
+                    if not part or not part.Parent then
+                        part = model:FindFirstChildWhichIsA("BasePart", true)
+                        ESP.ChestPart[model] = part
+                    end
+                end
                 if part then
                     seen[model] = true
                     espSet(model, part, "📦 " .. model.Name .. " " .. math.floor(Utils.Distance(my, part.Position)) .. "m",
@@ -3641,7 +3696,7 @@ function ESP.Loop()
     task.spawn(function()
         while State.Running do
             pcall(ESP.Update)
-            task.wait(State.ESPUpdateRate)
+            task.wait(math.max(State.ESPUpdateRate or 0.5, 0.35))
         end
     end)
 end
@@ -4862,7 +4917,7 @@ function Raid.FindButton(ref)
     local n = 0
     for _, d in ipairs(map:GetDescendants()) do
         n = n + 1
-        if n % 4000 == 0 then task.wait() end
+        if n % 1500 == 0 then task.wait() end
         if d:IsA("ClickDetector") and not seen[d] then
             local p, depth = d.Parent, 0
             while p and p ~= map and depth < 8 do
@@ -5751,12 +5806,21 @@ function CakeP.Boss()
         CakeP.BossScanAt = os.clock()
         CakeP.BossFound = nil
         pcall(function()
-            for _, d in ipairs(Workspace:GetDescendants()) do
-                if d:IsA("Humanoid") and d.Health > 0 then
-                    local m = d.Parent
-                    if m and m:IsA("Model") and m.Name:lower():find("cake prince", 1, true) then
-                        CakeP.BossFound = m
-                        break
+            for m, d in pairs(Registry.Mobs) do
+                if m.Parent and d.Health > 0 and m.Name:lower():find("cake prince", 1, true) then
+                    CakeP.BossFound = m
+                    break
+                end
+            end
+            if not CakeP.BossFound and os.clock() - (CakeP.BossFullAt or 0) > 15 then
+                CakeP.BossFullAt = os.clock()
+                for _, d in ipairs(Workspace:GetDescendants()) do
+                    if d:IsA("Humanoid") and d.Health > 0 then
+                        local m = d.Parent
+                        if m and m:IsA("Model") and m.Name:lower():find("cake prince", 1, true) then
+                            CakeP.BossFound = m
+                            break
+                        end
                     end
                 end
             end
@@ -6179,9 +6243,9 @@ function CakeP.PullInit()
         local p, want = CakeP.PullAt, CakeP.GName
         if not p or not want or not CakeP.Active then return end
         for model, hum in pairs(Registry.Mobs) do
-            if model.Parent and hum.Health > 0 and not Farm.IsUnpullable(model) and Farm.IsFarmable(model) then
+            if model.Parent and hum.Health > 0 and not Farm.IsUnpullable(model) then
                 local nm = cleanName(model.Name)
-                if nm:lower() == want:lower() then
+                if Utils.Lower(nm) == Utils.Lower(want) and Farm.IsFarmable(model) then
                     local root = model:FindFirstChild("HumanoidRootPart")
                     if root and Utils.Distance(root.Position, p) < CakeP.PULL_R and Farm.Owned(root) then
                         local slot = Farm.SlotOf(model)
@@ -7909,8 +7973,8 @@ function UI.UpdateLoop()
         while State.Running do
             pcall(UI.Update)
             tick = tick + 1
-            if tick % 40 == 0 and UI.CurrentTab == "Boss" and UI.RefreshBossList then pcall(UI.RefreshBossList) end
-            task.wait(0.25)
+            if tick % 20 == 0 and UI.CurrentTab == "Boss" and UI.RefreshBossList then pcall(UI.RefreshBossList) end
+            task.wait(0.5)
         end
     end)
 end
